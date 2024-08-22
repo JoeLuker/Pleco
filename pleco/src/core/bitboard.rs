@@ -221,8 +221,6 @@ impl BitBoard {
         compute_encoder.set_buffer(2, Some(&size_buffer), 0);
     
         let thread_execution_width = PIPELINE.thread_execution_width();
-        let max_total_threads_per_threadgroup = PIPELINE.max_total_threads_per_threadgroup();
-    
         let threadgroup_size = MTLSize::new(thread_execution_width, 1, 1);
         let grid_size = MTLSize::new(
             (boards.len() as u64 + thread_execution_width as u64 - 1) / thread_execution_width as u64,
