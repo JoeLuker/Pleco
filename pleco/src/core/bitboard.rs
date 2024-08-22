@@ -198,35 +198,44 @@ impl BitBoard {
             (boards.len() * mem::size_of::<BitBoard>()) as u64,
             MTLResourceOptions::StorageModeShared,
         );
-
+    
         let output_buffer = DEVICE.new_buffer(
             (boards.len() * mem::size_of::<u8>()) as u64,
             MTLResourceOptions::StorageModeShared,
         );
-
+    
         let command_buffer = QUEUE.new_command_buffer();
         let compute_encoder = command_buffer.new_compute_command_encoder();
-
+    
         compute_encoder.set_compute_pipeline_state(&PIPELINE);
         compute_encoder.set_buffer(0, Some(&input_buffer), 0);
         compute_encoder.set_buffer(1, Some(&output_buffer), 0);
-
+        
+        // Pass buffer size as a separate buffer
+        let buffer_size = boards.len() as u32;
+        let size_buffer = DEVICE.new_buffer_with_data(
+            &buffer_size as *const u32 as *const _,
+            mem::size_of::<u32>() as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        compute_encoder.set_buffer(2, Some(&size_buffer), 0);
+    
         let thread_execution_width = PIPELINE.thread_execution_width();
         let max_total_threads_per_threadgroup = PIPELINE.max_total_threads_per_threadgroup();
-
+    
         let threadgroup_size = MTLSize::new(thread_execution_width, 1, 1);
         let grid_size = MTLSize::new(
             (boards.len() as u64 + thread_execution_width as u64 - 1) / thread_execution_width as u64,
             1,
             1,
         );
-
+    
         compute_encoder.dispatch_thread_groups(grid_size, threadgroup_size);
         compute_encoder.end_encoding();
-
+    
         command_buffer.commit();
         command_buffer.wait_until_completed();
-
+    
         let result_ptr = output_buffer.contents() as *const u8;
         unsafe {
             std::slice::from_raw_parts(result_ptr, boards.len()).to_vec()
@@ -423,9 +432,15 @@ mod tests {
         ];
         
         let cpu_results: Vec<u8> = bitboards.iter().map(|bb| bb.count_bits()).collect();
-        let gpu_results = BitBoard::gpu_popcount(&bitboards);
         
-        assert_eq!(cpu_results, gpu_results, "GPU popcount results should match CPU results");
+        match BitBoard::gpu_popcount(&bitboards) {
+            Ok(gpu_results) => {
+                assert_eq!(cpu_results, gpu_results, "GPU popcount results should match CPU results");
+            },
+            Err(e) => {
+                panic!("GPU popcount failed: {:?}", e);
+            }
+        }
     }
 
     #[test]
