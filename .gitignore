@@ -11,3 +11,10 @@ pleco_engine/Cargo.lock
 Cargo.lock
 notes.txt
 .DS_Store
+.gitignore
+printer.py
+.git
+.git/*
+.github/*
+LICENSE
+pleco/benches/*

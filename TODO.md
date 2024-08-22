@@ -36,6 +36,6 @@ Look at all changes stockfish has made since Pleco was created, port over meanin
 ================================================
 
 Update more packages
-Use the Chess.dom analyser to see weaknesses
+Use the Chess.com analyser to see weaknesses
 Consider moving the board ranking to the pleco_engine package
 Add cool runtime output

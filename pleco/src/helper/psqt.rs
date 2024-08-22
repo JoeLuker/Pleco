@@ -2,7 +2,7 @@ use core::masks::*;
 use core::score::*;
 use {File, Piece, Player, SQ};
 
-const BONUS: [[[Score; (FILE_CNT / 2)]; RANK_CNT]; PIECE_TYPE_CNT] = [
+const BONUS: [[[Score; FILE_CNT / 2]; RANK_CNT]; PIECE_TYPE_CNT] = [
     [
         // NO PIECE
         [Score(0, 0), Score(0, 0), Score(0, 0), Score(0, 0)],

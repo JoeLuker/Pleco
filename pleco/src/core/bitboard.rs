@@ -2,6 +2,8 @@ use metal::{Device, MTLResourceOptions, ComputePipelineState, CommandQueue, MTLS
 use std::fmt;
 use std::ops::*;
 use std::mem;
+use std::hint::unreachable_unchecked;
+
 use lazy_static::lazy_static;
 
 use super::bit_twiddles::*;
@@ -285,9 +287,96 @@ impl Default for RandBitBoard {
 }
 
 impl RandBitBoard {
-    // ... (rest of the RandBitBoard implementation)
-}
+    /// Returns a vector of "amount" BitBoards.
+    pub fn many(mut self, amount: usize) -> Vec<BitBoard> {
+        let mut boards: Vec<BitBoard> = Vec::with_capacity(amount);
+        for _x in 0..amount {
+            boards.push(self.go());
+        }
+        boards
+    }
 
+    /// Returns a singular random BitBoard.
+    pub fn one(mut self) -> BitBoard {
+        self.go()
+    }
+
+    /// Sets the average number of bits in the resulting Bitboard.
+    pub fn avg(mut self, bits: u8) -> Self {
+        self.rand = if bits >= 36 {
+            RandAmount::VeryDense
+        } else if bits >= 26 {
+            RandAmount::Dense
+        } else if bits >= 12 {
+            RandAmount::Standard
+        } else if bits >= 7 {
+            RandAmount::Sparse
+        } else if bits >= 5 {
+            RandAmount::VerySparse
+        } else {
+            RandAmount::ExtremelySparse
+        };
+        self
+    }
+
+    /// Allows empty BitBoards to be returned.
+    pub fn allow_empty(mut self) -> Self {
+        self.min = 0;
+        self
+    }
+
+    /// Sets the maximum number of bits in a `BitBoard`.
+    pub fn max(mut self, max: u16) -> Self {
+        self.max = max;
+        self
+    }
+
+    /// Sets the minimum number of bits in a `BitBoard`.
+    pub fn min(mut self, min: u16) -> Self {
+        self.min = min;
+        self
+    }
+
+    /// Sets the generation to use pseudo-random numbers instead of random
+    /// numbers. The seed is a random number for the random numbers to be generated
+    /// off of.
+    pub fn pseudo_random(mut self, seed: u64) -> Self {
+        self.seed = if seed == 0 { 1 } else { seed };
+        self.prng = PRNG::init(seed);
+        self
+    }
+
+    fn go(&mut self) -> BitBoard {
+        if self.rand == RandAmount::Singular {
+            return BitBoard(self.prng.singular_bit());
+        }
+
+        loop {
+            let num = match self.rand {
+                RandAmount::VeryDense => self.prng.rand() | self.prng.rand(), // Average 48 bits
+                RandAmount::Dense => self.prng.rand(),                        // Average 32 bits
+                RandAmount::Standard => self.prng.rand() & self.prng.rand(),  // Average 16 bits
+                RandAmount::Sparse => self.prng.sparse_rand(),                // Average 8 bits
+                RandAmount::VerySparse => {
+                    self.prng.sparse_rand() & (self.prng.rand() | self.prng.rand())
+                } // Average 6 bits
+                RandAmount::ExtremelySparse => self.prng.sparse_rand() & self.prng.rand(), // Average 4 bits
+                RandAmount::Singular => unsafe { unreachable_unchecked() },
+            };
+            let count = popcount64(num) as u16;
+            if count >= self.min && count <= self.max {
+                return BitBoard(num);
+            }
+        }
+    }
+
+    fn random(&mut self) -> usize {
+        if self.seed == 0 {
+            return rand::random::<usize>();
+        }
+        self.prng.rand() as usize
+    }
+}
 #[derive(Eq, PartialEq)]
 enum RandAmount {
     VeryDense,
