@@ -432,15 +432,9 @@ mod tests {
         ];
         
         let cpu_results: Vec<u8> = bitboards.iter().map(|bb| bb.count_bits()).collect();
+        let gpu_results = BitBoard::gpu_popcount(&bitboards);
         
-        match BitBoard::gpu_popcount(&bitboards) {
-            Ok(gpu_results) => {
-                assert_eq!(cpu_results, gpu_results, "GPU popcount results should match CPU results");
-            },
-            Err(e) => {
-                panic!("GPU popcount failed: {:?}", e);
-            }
-        }
+        assert_eq!(cpu_results, gpu_results, "GPU popcount results should match CPU results");
     }
 
     #[test]
