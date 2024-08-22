@@ -56,7 +56,8 @@ rand = "0.8.5"
 rayon = "1.5.3"
 num_cpus = "1.13.1"
 mucow = "0.1.0"
-lazy_static = "1.4.0"
+lazy_static = "1.5.0"
+metal = "0.29.0"
 
 [features]
 default = []

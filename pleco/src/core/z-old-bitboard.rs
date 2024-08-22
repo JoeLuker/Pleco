@@ -1,33 +1,49 @@
-use metal::{Device, MTLResourceOptions, ComputePipelineState, CommandQueue, MTLSize, CompileOptions};
-use std::fmt;
-use std::ops::*;
-use std::mem;
-use lazy_static::lazy_static;
+//! Module containing the `BitBoard` and associated functions / constants.
+//!
+//! A [`BitBoard`] is a set of bits, where the index of each bit represents a square on the
+//! Board. We use this to mark whether or not something is residing at a certain square. For
+//! example, if we are using it to map the positions of the white pawns, and there exists a
+//! pawn at square B2, the bit at index 9 will be set to '1'. The lack of a piece is marked
+//! with a '0' instead.
+//!
+//! Each bit's index of a [`BitBoard`] maps to the following squares:
+//!
+//! ```md,ignore
+//! 8 | 56 57 58 59 60 61 62 63
+//! 7 | 48 49 50 51 52 53 54 55
+//! 6 | 40 41 42 43 44 45 46 47
+//! 5 | 32 33 34 35 36 37 38 39
+//! 4 | 24 25 26 27 28 29 30 31
+//! 3 | 16 17 18 19 20 21 22 23
+//! 2 | 8  9  10 11 12 13 14 15
+//! 1 | 0  1  2  3  4  5  6  7
+//!   -------------------------
+//!      a  b  c  d  e  f  g  h
+//! ```
+//!
+//! [`BitBoard`]: struct.BitBoard.html
+
+extern crate rand;
 
 use super::bit_twiddles::*;
 use super::masks::*;
 use super::sq::SQ;
-use super::*;
+use super::Player;
 use tools::prng::PRNG;
 
+use std::fmt;
+use std::hint::unreachable_unchecked;
+use std::mem;
+use std::ops::*;
+
+/// A `BitBoard` is simply a 64 bit long integer where each
+/// bit maps to a specific square. Used for mapping occupancy, where '1' represents
+/// a piece being at that index's square, and a '0' represents a lack of a piece.
 #[derive(Copy, Clone, Default, Hash, PartialEq, Eq, Debug)]
 #[repr(transparent)]
 pub struct BitBoard(pub u64);
 
 impl_bit_ops!(BitBoard, u64);
-
-// Metal setup
-lazy_static! {
-    static ref DEVICE: Device = Device::system_default().expect("No Metal device found");
-    static ref QUEUE: CommandQueue = DEVICE.new_command_queue();
-    static ref PIPELINE: ComputePipelineState = {
-        let shader_src = include_str!("bitboard.metal");
-        let options = CompileOptions::new();
-        let library = DEVICE.new_library_with_source(shader_src, &options).unwrap();
-        let function = library.get_function("bitboard_operations", None).unwrap();
-        DEVICE.new_compute_pipeline_state_with_function(&function).unwrap()
-    };
-}
 
 impl BitBoard {
     /// BitBoard of File A.
@@ -71,6 +87,11 @@ impl BitBoard {
     pub const ALL: BitBoard = BitBoard(!0);
 
     /// Converts a `BitBoard` to a square.
+    ///
+    /// # Safety
+    ///
+    /// The `BitBoard` must have exactly one bit inside of it, or else
+    /// this will return the square of the least significant bit.
     #[inline(always)]
     pub fn to_sq(self) -> SQ {
         debug_assert_eq!(self.count_bits(), 1);
@@ -84,12 +105,20 @@ impl BitBoard {
     }
 
     /// Returns the `SQ` of the least significant bit.
+    ///
+    /// # Panic
+    ///
+    /// Will panic if the `BitBoard` is empty.
     #[inline(always)]
     pub fn bit_scan_forward(self) -> SQ {
         SQ(self.bit_scan_forward_u8())
     }
 
     /// Returns the index (u8) of the least significant bit.
+    ///
+    /// # Panic
+    ///
+    /// Will panic if the `BitBoard` is empty.
     #[inline(always)]
     pub fn bit_scan_forward_u8(self) -> u8 {
         bit_scan_forward(self.0)
@@ -133,6 +162,13 @@ impl BitBoard {
 
     /// Returns the index (as a square) of the least significant bit and removes
     /// that bit from the `BitBoard`.
+    ///
+    /// # Safety
+    ///
+    /// Panics if the `BitBoard` is empty. See [`BitBoard::pop_some_lsb`] for a
+    /// non-panicking version of the method.
+    ///
+    /// [`BitBoard::pop_some_lsb`]: struct.BitBoard.html#method.pop_some_lsb
     #[inline(always)]
     pub fn pop_lsb(&mut self) -> SQ {
         let sq = self.bit_scan_forward();
@@ -153,6 +189,13 @@ impl BitBoard {
 
     /// Returns the index (as a square) and bit of the least significant bit and removes
     /// that bit from the `BitBoard`.
+    ///
+    /// # Safety
+    ///
+    /// Panics if the `BitBoard` is empty. See [`BitBoard::pop_some_lsb_and_bit`] for a
+    /// non-panicking version of the method.
+    ///
+    /// [`BitBoard::pop_some_lsb_and_bit`]: struct.BitBoard.html#method.pop_some_lsb_and_bit
     #[inline(always)]
     pub fn pop_lsb_and_bit(&mut self) -> (SQ, BitBoard) {
         let sq: SQ = self.bit_scan_forward();
@@ -173,6 +216,10 @@ impl BitBoard {
     }
 
     /// Returns the front-most square of a player on the current `BitBoard`.
+    ///
+    /// # Safety
+    ///
+    /// Panics if the `BitBoard` is empty.
     #[inline]
     pub fn frontmost_sq(self, player: Player) -> SQ {
         match player {
@@ -182,6 +229,10 @@ impl BitBoard {
     }
 
     /// Returns the back-most square of a player on the current `BitBoard`.
+    ///
+    /// # Safety
+    ///
+    /// panics if the `BitBoard` is empty.
     #[inline]
     pub fn backmost_sq(self, player: Player) -> SQ {
         match player {
@@ -190,48 +241,22 @@ impl BitBoard {
         }
     }
 
-    pub fn gpu_popcount(boards: &[BitBoard]) -> Vec<u8> {
-        let input_buffer = DEVICE.new_buffer_with_data(
-            boards.as_ptr() as *const _,
-            (boards.len() * mem::size_of::<BitBoard>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-
-        let output_buffer = DEVICE.new_buffer(
-            (boards.len() * mem::size_of::<u8>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-
-        let command_buffer = QUEUE.new_command_buffer();
-        let compute_encoder = command_buffer.new_compute_command_encoder();
-
-        compute_encoder.set_compute_pipeline_state(&PIPELINE);
-        compute_encoder.set_buffer(0, Some(&input_buffer), 0);
-        compute_encoder.set_buffer(1, Some(&output_buffer), 0);
-
-        let thread_execution_width = PIPELINE.thread_execution_width();
-        let max_total_threads_per_threadgroup = PIPELINE.max_total_threads_per_threadgroup();
-
-        let threadgroup_size = MTLSize::new(thread_execution_width, 1, 1);
-        let grid_size = MTLSize::new(
-            (boards.len() as u64 + thread_execution_width as u64 - 1) / thread_execution_width as u64,
-            1,
-            1,
-        );
-
-        compute_encoder.dispatch_thread_groups(grid_size, threadgroup_size);
-        compute_encoder.end_encoding();
-
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-
-        let result_ptr = output_buffer.contents() as *const u8;
-        unsafe {
-            std::slice::from_raw_parts(result_ptr, boards.len()).to_vec()
-        }
+    /// Returns a clone of a `[[BitBoard; 6]; 2]`. Used to duplicate occupancy `BitBoard`s of each
+    /// piece for each player.
+    #[inline(always)]
+    pub fn clone_all_occ(
+        bbs: &[[BitBoard; PIECE_TYPE_CNT]; PLAYER_CNT],
+    ) -> [[BitBoard; PIECE_TYPE_CNT]; PLAYER_CNT] {
+        let new_bbs: [[BitBoard; PIECE_TYPE_CNT]; PLAYER_CNT] = unsafe { mem::transmute_copy(bbs) };
+        new_bbs
     }
 
-    // Add more GPU-accelerated methods here as needed...
+    /// Returns a clone of a `[BitBoard; 2]`. Used to duplicate occupancy `BitBoard`s of each player.
+    #[inline(always)]
+    pub fn clone_occ_bbs(bbs: &[BitBoard; PLAYER_CNT]) -> [BitBoard; PLAYER_CNT] {
+        let new_bbs: [BitBoard; PLAYER_CNT] = unsafe { mem::transmute_copy(bbs) };
+        new_bbs
+    }
 }
 
 impl Shl<SQ> for BitBoard {
@@ -263,6 +288,18 @@ impl fmt::Display for BitBoard {
     }
 }
 
+/// Sets the Number of random bits on a randomly-generated `BitBoard`.
+#[derive(Eq, PartialEq)]
+enum RandAmount {
+    VeryDense,       // Average 48 bits
+    Dense,           // Average 32 bits
+    Standard,        // Average 16 bits
+    Sparse,          // Average 8 bits
+    VerySparse,      // Average 6 bits
+    ExtremelySparse, // Average 4 bits
+    Singular,        // One and only one bit set.
+}
+
 /// BitBoard generating structure.
 pub struct RandBitBoard {
     prng: PRNG,
@@ -285,22 +322,100 @@ impl Default for RandBitBoard {
 }
 
 impl RandBitBoard {
-    // ... (rest of the RandBitBoard implementation)
-}
+    /// Returns a vector of "amount" BitBoards.
+    pub fn many(mut self, amount: usize) -> Vec<BitBoard> {
+        let mut boards: Vec<BitBoard> = Vec::with_capacity(amount);
+        for _x in 0..amount {
+            boards.push(self.go());
+        }
+        boards
+    }
 
-#[derive(Eq, PartialEq)]
-enum RandAmount {
-    VeryDense,
-    Dense,
-    Standard,
-    Sparse,
-    VerySparse,
-    ExtremelySparse,
-    Singular,
+    /// Returns a singular random BitBoard.
+    pub fn one(mut self) -> BitBoard {
+        self.go()
+    }
+
+    /// Sets the average number of bits in the resulting Bitboard.
+    pub fn avg(mut self, bits: u8) -> Self {
+        self.rand = if bits >= 36 {
+            RandAmount::VeryDense
+        } else if bits >= 26 {
+            RandAmount::Dense
+        } else if bits >= 12 {
+            RandAmount::Standard
+        } else if bits >= 7 {
+            RandAmount::Sparse
+        } else if bits >= 5 {
+            RandAmount::VerySparse
+        } else {
+            RandAmount::ExtremelySparse
+        };
+        self
+    }
+
+    /// Allows empty BitBoards to be returned.
+    pub fn allow_empty(mut self) -> Self {
+        self.min = 0;
+        self
+    }
+
+    /// Sets the maximum number of bits in a `BitBoard`.
+    pub fn max(mut self, max: u16) -> Self {
+        self.max = max;
+        self
+    }
+
+    /// Sets the minimum number of bits in a `BitBoard`.
+    pub fn min(mut self, min: u16) -> Self {
+        self.min = min;
+        self
+    }
+
+    /// Sets the generation to use pseudo-random numbers instead of random
+    /// numbers. The seed is a random number for the random numbers to be generated
+    /// off of.
+    pub fn pseudo_random(mut self, seed: u64) -> Self {
+        self.seed = if seed == 0 { 1 } else { seed };
+        self.prng = PRNG::init(seed);
+        self
+    }
+
+    fn go(&mut self) -> BitBoard {
+        if self.rand == RandAmount::Singular {
+            return BitBoard(self.prng.singular_bit());
+        }
+
+        loop {
+            let num = match self.rand {
+                RandAmount::VeryDense => self.prng.rand() | self.prng.rand(), // Average 48 bits
+                RandAmount::Dense => self.prng.rand(),                        // Average 32 bits
+                RandAmount::Standard => self.prng.rand() & self.prng.rand(),  // Average 16 bits
+                RandAmount::Sparse => self.prng.sparse_rand(),                // Average 8 bits
+                RandAmount::VerySparse => {
+                    self.prng.sparse_rand() & (self.prng.rand() | self.prng.rand())
+                } // Average 6 bits
+                RandAmount::ExtremelySparse => self.prng.sparse_rand() & self.prng.rand(), // Average 4 bits
+                RandAmount::Singular => unsafe { unreachable_unchecked() },
+            };
+            let count = popcount64(num) as u16;
+            if count >= self.min && count <= self.max {
+                return BitBoard(num);
+            }
+        }
+    }
+
+    fn random(&mut self) -> usize {
+        if self.seed == 0 {
+            return rand::random::<usize>();
+        }
+        self.prng.rand() as usize
+    }
 }
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
@@ -322,21 +437,6 @@ mod tests {
                 assert_eq!(bb.count_bits() + 1, total_pre);
             }
         }
-    }
-
-    #[test]
-    fn gpu_popcount_test() {
-        let bitboards = vec![
-            BitBoard(0x1234567890ABCDEF),
-            BitBoard(0xFEDCBA9876543210),
-            BitBoard(0xAAAAAAAAAAAAAAAA),
-            BitBoard(0x5555555555555555),
-        ];
-        
-        let cpu_results: Vec<u8> = bitboards.iter().map(|bb| bb.count_bits()).collect();
-        let gpu_results = BitBoard::gpu_popcount(&bitboards);
-        
-        assert_eq!(cpu_results, gpu_results, "GPU popcount results should match CPU results");
     }
 
     #[test]
